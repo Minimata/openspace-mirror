@@ -17,7 +17,7 @@ services:
     networks:
       - general
     command:
-      # - --log.level=DEBUG
+      - --log.level=DEBUG
       # - --api.insecure=true
       - --providers.docker
       - --providers.docker.exposedByDefault=true
@@ -527,111 +527,121 @@ services:
       - traefik.http.routers.taiga-protected.rule=Host(`${TAIGA_SUBDOMAIN}.${DOMAIN_NAME}`) && PathPrefix(`/protected`)
       - traefik.http.services.taiga-protected.loadbalancer.server.port=${TAIGA_PROTECTED_INTERNAL_PORT}
 
-  glitchtip:
-    image: glitchtip/glitchtip
-    container_name: glitchtip
-    environment: 
-      - DATABASE_URL=postgres://${GLITCHTIP_DB_USER}:${GLITCHTIP_DB_PASSWORD}@glitchtip_db:5432/${GLITCHTIP_DB_NAME}
-      - SECRET_KEY=${GLITCHTIP_SECRET_KEY}
-      - GLITCHTIP_DOMAIN=${HTTP_SCHEME}://${GLITCHTIP_SUBDOMAIN}.${DOMAIN_NAME}
-      - DEFAULT_FROM_EMAIL=${EMAIL}
-      - PORT=${GLITCHTIP_INTERNAL_PORT}
-    restart: unless-stopped
-    volumes: 
-      - ./glitchtip:/code/uploads
-    networks:
-      - general
-    depends_on:
-      traefik:
-        condition: service_started
-      glitchtip_redis:
-        condition: service_started
-      glitchtip_worker:
-        condition: service_started
-      glitchtip_db:
-        condition: service_healthy
-    labels:
-      - traefik.enable=true
-      - traefik.http.routers.glitchtip.rule=Host(`${GLITCHTIP_SUBDOMAIN}.${DOMAIN_NAME}`)
-      - traefik.http.routers.glitchtip.service=glitchtip
-      - traefik.http.routers.glitchtip.tls=true
-      - traefik.http.routers.glitchtip.entrypoints=web,websecure
-      - traefik.http.routers.glitchtip.tls.certresolver=production
-      - traefik.http.services.glitchtip.loadbalancer.server.port=${GLITCHTIP_INTERNAL_PORT}
-  glitchtip_db:
-    image: postgres:latest
-    container_name: glitchtip_db
-    restart: unless-stopped
-    environment:
-      - TZ=${GENERIC_TIMEZONE}
-      - POSTGRES_DB=${GLITCHTIP_DB_NAME}
-      - POSTGRES_USER=${GLITCHTIP_DB_USER}
-      - POSTGRES_PASSWORD=${GLITCHTIP_DB_PASSWORD}
-    volumes:
-      - ./glitchtip_postgres:/var/lib/postgresql/data
-    depends_on:
-      - traefik
-    networks:
-      - general
-    healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "pg_isready -U ${GLITCHTIP_DB_USER} -d ${GLITCHTIP_DB_NAME}",
-        ]
-      interval: 5s
-      timeout: 5s
-      retries: 5
+  # glitchtip:
+  #   image: glitchtip/glitchtip
+  #   container_name: glitchtip
+  #   environment: 
+  #     - GLITCHTIP_DOMAIN=${HTTP_SCHEME}://${GLITCHTIP_SUBDOMAIN}.${DOMAIN_NAME}
+  #     - DATABASE_URL=postgres://${GLITCHTIP_DB_USER}:${GLITCHTIP_DB_PASSWORD}@glitchtip_db:5432/${GLITCHTIP_DB_NAME}
+  #     - SECRET_KEY=${GLITCHTIP_SECRET_KEY}
+  #     - DEFAULT_FROM_EMAIL=${EMAIL_DEFAULT_FROM}
+  #     - PORT=${GLITCHTIP_INTERNAL_PORT}
+  #     - EMAIL_URL=consolemail://
+  #     - CELERY_WORKER_AUTOSCALE=${GLITCHTIP_CELERY_WORKER_AUTOSCALE}
+  #     - CELERY_WORKER_MAX_TASKS_PER_CHILD=${GLITCHTIP_CELERY_WORKER_MAX_TASKS_PER_CHILD}
+  #   restart: unless-stopped
+  #   ports:
+  #     - ${GLITCHTIP_PORT}:${GLITCHTIP_INTERNAL_PORT}
+  #   volumes: 
+  #     - ./glitchtip:/code/uploads
+  #   networks:
+  #     - general
+  #   depends_on:
+  #     traefik:
+  #       condition: service_started
+  #     glitchtip_redis:
+  #       condition: service_started
+  #     glitchtip_worker:
+  #       condition: service_started
+  #     glitchtip_db:
+  #       condition: service_healthy
+  #   labels:
+  #     - traefik.enable=true
+  #     - traefik.http.routers.glitchtip.rule=Host(`${GLITCHTIP_SUBDOMAIN}.${DOMAIN_NAME}`)
+  #     - traefik.http.routers.glitchtip.tls=true
+  #     - traefik.http.routers.glitchtip.service=glitchtip
+  #     - traefik.http.routers.glitchtip.entrypoints=web,websecure
+  #     - traefik.http.routers.glitchtip.tls.certresolver=production
+  #     - traefik.http.services.glitchtip.loadbalancer.server.port=${GLITCHTIP_INTERNAL_PORT}
 
-  glitchtip_redis:
-    image: redis
-    container_name: glitchtip_redis
-    restart: unless-stopped
-    networks:
-      - general
-    depends_on:
-      - traefik
+  # glitchtip_db:
+  #   image: postgres:latest
+  #   container_name: glitchtip_db
+  #   restart: unless-stopped
+  #   environment:
+  #     - TZ=${GENERIC_TIMEZONE}
+  #     - POSTGRES_DB=${GLITCHTIP_DB_NAME}
+  #     - POSTGRES_USER=${GLITCHTIP_DB_USER}
+  #     - POSTGRES_PASSWORD=${GLITCHTIP_DB_PASSWORD}
+  #   volumes:
+  #     - ./glitchtip_postgres:/var/lib/postgresql/data
+  #   depends_on:
+  #     - traefik
+  #   networks:
+  #     - general
+  #   healthcheck:
+  #     test:
+  #       [
+  #         "CMD-SHELL",
+  #         "pg_isready -U ${GLITCHTIP_DB_USER} -d ${GLITCHTIP_DB_NAME}",
+  #       ]
+  #     interval: 5s
+  #     timeout: 5s
+  #     retries: 5
 
-  glitchtip_worker:
-    image: glitchtip/glitchtip
-    container_name: glitchtip_worker
-    command: ./bin/run-celery-with-beat.sh
-    depends_on:
-      traefik:
-        condition: service_started
-      glitchtip_redis:
-        condition: service_started
-      glitchtip_db:
-        condition: service_healthy
-    environment: 
-      - CELERY_WORKER_AUTOSCALE=${GLITCHTIP_CELERY_WORKER_AUTOSCALE}
-      - CELERY_WORKER_MAX_TASKS_PER_CHILD=${GLITCHTIP_CELERY_WORKER_MAX_TASKS_PER_CHILD}
-    networks:
-      - general
-    restart: unless-stopped
-    volumes: 
-      - ./glitchtip:/code/uploads
-    labels:
-      - traefik.enable=true
-  glitchtip_migrate:
-    image: glitchtip/glitchtip
-    container_name: glitchtip_migrate
-    networks:
-      general:
-        ipv4_address: ${GLITCHTIP_MIGRATE_IP}
-    depends_on:
-      traefik:
-        condition: service_started
-      glitchtip_redis:
-        condition: service_started
-      glitchtip_db:
-        condition: service_healthy
-    command: "./manage.py migrate"
-    environment: 
-      - DATABASE_URL=postgres://${GLITCHTIP_DB_USER}:${GLITCHTIP_DB_PASSWORD}@glitchtip_db:5432/${GLITCHTIP_DB_NAME}
-      - SECRET_KEY=${GLITCHTIP_SECRET_KEY}
-      # - GLITCHTIP_DOMAIN=${HTTP_SCHEME}://${GLITCHTIP_SUBDOMAIN}.${DOMAIN_NAME}
-      # - DEFAULT_FROM_EMAIL=${EMAIL}
+  # glitchtip_redis:
+  #   image: redis
+  #   container_name: glitchtip_redis
+  #   restart: unless-stopped
+  #   networks:
+  #     - general
+  #   depends_on:
+  #     - traefik
+
+  # glitchtip_worker:
+  #   image: glitchtip/glitchtip
+  #   container_name: glitchtip_worker
+  #   command: ./bin/run-celery-with-beat.sh
+  #   depends_on:
+  #     traefik:
+  #       condition: service_started
+  #     glitchtip_redis:
+  #       condition: service_started
+  #     glitchtip_db:
+  #       condition: service_healthy
+  #   environment: 
+  #     - DATABASE_URL=postgres://${GLITCHTIP_DB_USER}:${GLITCHTIP_DB_PASSWORD}@glitchtip_db:5432/${GLITCHTIP_DB_NAME}
+  #     - SECRET_KEY=${GLITCHTIP_SECRET_KEY}
+  #     - GLITCHTIP_DOMAIN=${HTTP_SCHEME}://${GLITCHTIP_SUBDOMAIN}.${DOMAIN_NAME}
+  #     - DEFAULT_FROM_EMAIL=${EMAIL_DEFAULT_FROM}
+  #     - PORT=${GLITCHTIP_INTERNAL_PORT}
+  #     - EMAIL_URL=consolemail://
+  #     - CELERY_WORKER_AUTOSCALE=${GLITCHTIP_CELERY_WORKER_AUTOSCALE}
+  #     - CELERY_WORKER_MAX_TASKS_PER_CHILD=${GLITCHTIP_CELERY_WORKER_MAX_TASKS_PER_CHILD}
+  #   networks:
+  #     - general
+  #   restart: unless-stopped
+  #   volumes: 
+  #     - ./glitchtip:/code/uploads
+
+  # glitchtip_migrate:
+  #   image: glitchtip/glitchtip
+  #   container_name: glitchtip_migrate
+  #   networks:
+  #     - general
+  #   depends_on:
+  #     traefik:
+  #       condition: service_started
+  #     glitchtip_redis:
+  #       condition: service_started
+  #     glitchtip_db:
+  #       condition: service_healthy
+  #   command: "./manage.py migrate"
+  #   environment: 
+  #     - DATABASE_URL=postgres://${GLITCHTIP_DB_USER}:${GLITCHTIP_DB_PASSWORD}@glitchtip_db:5432/${GLITCHTIP_DB_NAME}
+  #     # - SECRET_KEY=${GLITCHTIP_SECRET_KEY}
+  #     # - GLITCHTIP_DOMAIN=${HTTP_SCHEME}://${GLITCHTIP_SUBDOMAIN}.${DOMAIN_NAME}
+  #     # - DEFAULT_FROM_EMAIL=${EMAIL}
 
 
 networks:
