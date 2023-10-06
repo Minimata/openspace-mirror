@@ -1,0 +1,646 @@
+version: "3"
+
+services:
+  traefik:
+    image: traefik:v2.10.4
+    container_name: traefik
+    restart: unless-stopped
+    ports:
+      - 80:80
+      - 443:443
+      # - 8080:8080  # (optional) expose the dashboard ! don't use in production!
+    volumes:
+      - /etc/traefik/certs:/letsencrypt
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - INFOMANIAK_ACCESS_TOKEN=${INFOMANIAK_ACCESS_TOKEN}
+    networks:
+      - general
+    command:
+      # - --log.level=DEBUG
+      # - --api.insecure=true
+      - --providers.docker
+      - --providers.docker.exposedByDefault=true
+      - --entrypoints.web.address=:80
+      - --entrypoints.web.http.redirections.entryPoint.to=websecure
+      - --entrypoints.web.http.redirections.entryPoint.scheme=${HTTP_SCHEME}
+      - --entrypoints.web.http.redirections.entrypoint.permanent=true
+      - --entrypoints.websecure.address=:443
+      - --certificatesresolvers.production.acme.email=${EMAIL}
+      - --certificatesresolvers.production.acme.storage=/letsencrypt/acme.json
+      - --certificatesresolvers.production.acme.tlschallenge=true
+    labels:
+      - traefik.docker.network=general
+
+  gitea:
+    image: gitea/gitea:latest
+    container_name: gitea
+    restart: unless-stopped
+    environment:
+      - USER_UID=1000
+      - USER_GID=1000
+      - GITEA__database__DB_TYPE=postgres
+      - GITEA__database__HOST=gitea_db:5432
+      - GITEA__database__NAME=${GITEA_DB_NAME}
+      - GITEA__database__USER=${GITEA_DB_USER}
+      - GITEA__database__PASSWD=${GITEA_DB_PASSWORD}
+    networks:
+      - general
+    volumes:
+      - ./gitea:/data
+      - /etc/timezone:/etc/timezone:ro
+      - /etc/localtime:/etc/localtime:ro
+    ports:
+      - 222:22
+    depends_on:
+      traefik:
+        condition: service_started
+      gitea_db:
+        condition: service_healthy
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.gitea.rule=Host(`${GITEA_SUBDOMAIN}.${DOMAIN_NAME}`)
+      - traefik.http.routers.gitea.tls=true
+      - traefik.http.routers.gitea.entrypoints=web,websecure
+      - traefik.http.routers.gitea.tls.certresolver=production
+      - traefik.http.services.gitea.loadbalancer.server.port=${GITEA_INTERNAL_PORT}
+
+  gitea_runner:
+    image: gitea/act_runner:nightly
+    container_name: gitea_runner
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - GITEA_INSTANCE_URL=${HTTP_SCHEME}://${GITEA_SUBDOMAIN}.${DOMAIN_NAME}
+      - GITEA_RUNNER_REGISTRATION_TOKEN=${GITEA_RUNNER_REGISTRATION_TOKEN}
+    networks:
+      - general
+    depends_on:
+      - traefik
+      - gitea
+
+  gitea_db:
+    image: postgres:latest
+    container_name: gitea_db
+    restart: unless-stopped
+    networks:
+      - general
+    environment:
+      - POSTGRES_USER=${GITEA_DB_USER}
+      - POSTGRES_PASSWORD=${GITEA_DB_PASSWORD}
+      - POSTGRES_DB=${GITEA_DB_NAME}
+    volumes:
+      - ./gitea-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${GITEA_DB_USER} -d ${GITEA_DB_NAME}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      - traefik
+
+  coder:
+    image: ghcr.io/coder/coder:latest
+    container_name: coder
+    privileged: true
+    environment:
+      - CODER_PG_CONNECTION_URL=postgresql://${CODER_DB_USER}:${CODER_DB_PASSWORD}@coder_db:5432/${CODER_DB_NAME}?sslmode=disable
+      - CODER_HTTP_ADDRESS=0.0.0.0:${CODER_INTERNAL_PORT}
+      - CODER_ACCESS_URL=${HTTP_SCHEME}://${CODER_SUBDOMAIN}.${DOMAIN_NAME}
+      - CODER_WILDCARD_ACCESS_URL=*.${CODER_SUBDOMAIN}.${DOMAIN_NAME}
+    networks:
+      - general
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      traefik:
+        condition: service_started
+      coder_db:
+        condition: service_healthy
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.coder.rule=Host(`${CODER_SUBDOMAIN}.${DOMAIN_NAME}`)
+      - traefik.http.routers.coder.tls=true
+      - traefik.http.routers.coder.entrypoints=web,websecure
+      - traefik.http.routers.coder.tls.certresolver=production
+      - traefik.http.services.coder.loadbalancer.server.port=${CODER_INTERNAL_PORT}
+
+  coder_db:
+    image: postgres:14.2
+    container_name: coder_db
+    environment:
+      - POSTGRES_USER=${CODER_DB_USER}
+      - POSTGRES_PASSWORD=${CODER_DB_PASSWORD} 
+      - POSTGRES_DB=${CODER_DB_NAME}
+    networks:
+      - general
+    volumes:
+      - ./coder-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${CODER_DB_USER} -d ${CODER_DB_NAME}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      - traefik
+
+  n8n:
+    image: docker.n8n.io/n8nio/n8n
+    container_name: n8n
+    restart: always
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.n8n.rule=Host(`${N8N_SUBDOMAIN}.${DOMAIN_NAME}`)
+      - traefik.http.routers.n8n.tls=true
+      - traefik.http.routers.n8n.entrypoints=web,websecure
+      - traefik.http.routers.n8n.tls.certresolver=production
+      - traefik.http.services.n8n.loadbalancer.server.port=${N8N_INTERNAL_PORT}
+      - traefik.http.middlewares.n8n.headers.SSLRedirect=true
+      - traefik.http.middlewares.n8n.headers.STSSeconds=315360000
+      - traefik.http.middlewares.n8n.headers.browserXSSFilter=true
+      - traefik.http.middlewares.n8n.headers.contentTypeNosniff=true
+      - traefik.http.middlewares.n8n.headers.forceSTSHeader=true
+      - traefik.http.middlewares.n8n.headers.SSLHost=${DOMAIN_NAME}
+      - traefik.http.middlewares.n8n.headers.STSIncludeSubdomains=true
+      - traefik.http.middlewares.n8n.headers.STSPreload=true
+      - traefik.http.routers.n8n.middlewares=n8n@docker
+    environment:
+      - N8N_HOST=${N8N_SUBDOMAIN}.${DOMAIN_NAME}
+      - N8N_PORT=${N8N_INTERNAL_PORT}
+      - N8N_PROTOCOL=${HTTP_SCHEME}
+      - NODE_ENV=production
+      - WEBHOOK_URL=${HTTP_SCHEME}://${N8N_SUBDOMAIN}.${DOMAIN_NAME}/
+      - GENERIC_TIMEZONE=${GENERIC_TIMEZONE}
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=n8n_db
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=${N8N_DB_NAME}
+      - DB_POSTGRESDB_USER=${N8N_DB_USER}
+      - DB_POSTGRESDB_PASSWORD=${N8N_DB_PASSWORD}
+    volumes:
+      - ./n8n:/home/node/.n8n
+    depends_on:
+      traefik:
+        condition: service_started
+      n8n_db:
+        condition: service_healthy
+    networks:
+      - general
+  
+  n8n_db:
+    image: postgres:latest
+    container_name: n8n_db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=${N8N_DB_NAME}
+      - POSTGRES_USER=${N8N_DB_USER}
+      - POSTGRES_PASSWORD=${N8N_DB_PASSWORD} 
+    networks:
+      - general
+    volumes:
+      - ./n8n-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${N8N_DB_USER} -d ${N8N_DB_NAME}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      - traefik
+
+  mattermost:
+    image: mattermost/mattermost-enterprise-edition:latest
+    container_name: mattermost
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 200
+    read_only: false
+    tmpfs:
+      - /tmp
+    volumes:
+      - ./mattermost/config:/mattermost/config
+      - ./mattermost/data:/mattermost/data
+      - ./mattermost/logs:/mattermost/logs
+      - ./mattermost/plugins:/mattermost/plugins
+      - ./mattermost/client-plugins:/mattermost/client/plugins
+      - ./mattermost/bleve-indexes:/mattermost/bleve-indexes
+    environment:
+      - TZ=${GENERIC_TIMEZONE}
+      - MM_SQLSETTINGS_DRIVERNAME=postgres
+      - MM_SQLSETTINGS_DATASOURCE=postgres://${MATTERMOST_DB_USER}:${MATTERMOST_DB_PASSWORD}@mattermost_db:5432/${MATTERMOST_DB_NAME}?sslmode=disable&connect_timeout=10
+      - MM_BLEVESETTINGS_INDEXDIR=/mattermost/bleve-indexes
+      - MM_SERVICESETTINGS_SITEURL=${HTTP_SCHEME}://${MATTERMOST_SUBDOMAIN}.${DOMAIN_NAME}
+    ports:
+      - ${MATTERMOST_CALLS_PORT}:${MATTERMOST_CALLS_INTERNAL_PORT}/udp
+      - ${MATTERMOST_CALLS_PORT}:${MATTERMOST_CALLS_INTERNAL_PORT}/tcp
+    depends_on:
+      traefik:
+        condition: service_started
+      mattermost_db:
+        condition: service_healthy
+    networks:
+      - general
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.mattermost.rule=Host(`${MATTERMOST_SUBDOMAIN}.${DOMAIN_NAME}`)
+      - traefik.http.routers.mattermost.tls=true
+      - traefik.http.routers.mattermost.entrypoints=web,websecure
+      - traefik.http.routers.mattermost.tls.certresolver=production
+      - traefik.http.services.mattermost.loadbalancer.server.port=${MATTERMOST_INTERNAL_PORT}
+
+  mattermost_db:
+    image: postgres:latest
+    container_name: mattermost_db
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 100
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/run/postgresql
+    volumes:
+      - ./mattermost-postgres:/var/lib/postgresql/data
+    environment:
+      - TZ=${GENERIC_TIMEZONE}
+      - POSTGRES_DB=${MATTERMOST_DB_NAME}
+      - POSTGRES_USER=${MATTERMOST_DB_USER}
+      - POSTGRES_PASSWORD=${MATTERMOST_DB_PASSWORD}
+    depends_on:
+      - traefik
+    networks:
+      - general
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${MATTERMOST_DB_USER} -d ${MATTERMOST_DB_NAME}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+  
+  taiga-manage:
+    image: taigaio/taiga-back:latest
+    container_name: taiga-manage
+    environment: 
+      - POSTGRES_HOST=${TAIGA_DB_HOST}
+      - POSTGRES_DB=${TAIGA_DB_NAME}
+      - POSTGRES_USER=${TAIGA_DB_USER}
+      - POSTGRES_PASSWORD=${TAIGA_DB_PASSWORD}
+      - TAIGA_SECRET_KEY=${TAIGA_SECRET_KEY}
+      - RABBITMQ_USER=${RABBITMQ_USER}
+      - RABBITMQ_PASS=${RABBITMQ_PASS}
+      - CELERY_ENABLED=False
+    volumes: 
+      - ./taiga-back/static:/taiga-back/static
+      - ./taiga-back/media:/taiga-back/media
+    depends_on:
+      - traefik
+      - taiga-db
+    entrypoint: "python manage.py"
+    networks:
+      - general
+  
+  taiga-front:
+    image: taigaio/taiga-front:latest
+    container_name: taiga-front
+    environment:
+      - TAIGA_URL=${HTTP_SCHEME}://${TAIGA_SUBDOMAIN}.${DOMAIN_NAME}
+      - TAIGA_WEBSOCKETS_URL=${WEBSOCKET_SCHEME}://${TAIGA_SUBDOMAIN}.${DOMAIN_NAME}
+      - TAIGA_SUBPATH=${TAIGA_SUBPATH}
+      - PUBLIC_REGISTER_ENABLED=true
+    ports:
+      - ${TAIGA_FRONT_PORT}:${TAIGA_FRONT_INTERNAL_PORT}
+    networks:
+      - general
+    depends_on:
+      - traefik
+      - taiga-back
+      - taiga-db
+      - taiga-async
+      - taiga-async-rabbitmq
+      - taiga-events
+      - taiga-events-rabbitmq
+      - taiga-protected
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.taiga.rule=Host(`${TAIGA_SUBDOMAIN}.${DOMAIN_NAME}`)
+      - traefik.http.routers.taiga.tls=true
+      - traefik.http.routers.taiga.service=taiga
+      - traefik.http.routers.taiga.entrypoints=web,websecure
+      - traefik.http.routers.taiga.tls.certresolver=production
+      - traefik.http.services.taiga.loadbalancer.server.port=${TAIGA_FRONT_INTERNAL_PORT}
+
+  taiga-back:
+    image: taigaio/taiga-back:latest
+    container_name: taiga-back
+    environment: 
+      - POSTGRES_HOST=${TAIGA_DB_HOST}
+      - POSTGRES_DB=${TAIGA_DB_NAME}
+      - POSTGRES_USER=${TAIGA_DB_USER}
+      - POSTGRES_PASSWORD=${TAIGA_DB_PASSWORD}
+      - TAIGA_SECRET_KEY=${TAIGA_SECRET_KEY}
+      - TAIGA_SITES_SCHEME=${HTTP_SCHEME}
+      - TAIGA_SITES_DOMAIN=${TAIGA_SUBDOMAIN}.${DOMAIN_NAME}
+      - TAIGA_SUBPATH=""
+      - EMAIL_BACKEND=django.core.mail.backends.console.EmailBackend
+      - DEFAULT_FROM_EMAIL=${EMAIL_DEFAULT_FROM}
+      - EMAIL_USE_TLS=True
+      - EMAIL_USE_SSL=False
+      - EMAIL_HOST=smtp.host.${DOMAIN_NAME}
+      - EMAIL_PORT=587
+      - EMAIL_HOST_USER=${EMAIL_HOST_USER}
+      - EMAIL_HOST_PASSWORD=${EMAIL_HOST_PASSWORD}
+      - RABBITMQ_USER=${RABBITMQ_USER}
+      - RABBITMQ_PASS=${RABBITMQ_PASS}
+      - ENABLE_TELEMETRY=False
+    volumes: 
+      - ./taiga-back/static:/taiga-back/static
+      - ./taiga-back/media:/taiga-back/media
+    networks:
+      - general
+    depends_on:
+      traefik:
+        condition: service_started
+      taiga-db:
+        condition: service_healthy
+      taiga-events-rabbitmq:
+        condition: service_started
+      taiga-async-rabbitmq:
+        condition: service_started
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.taiga-back.tls=true
+      - traefik.http.routers.taiga-back.service=taiga-back
+      - traefik.http.routers.taiga-back.entrypoints=web,websecure
+      - traefik.http.routers.taiga-back.tls.certresolver=production
+      - traefik.http.routers.taiga-back.rule=Host(`${TAIGA_SUBDOMAIN}.${DOMAIN_NAME}`) && PathPrefix(`/api`)
+      - traefik.http.services.taiga-back.loadbalancer.server.port=${TAIGA_BACK_INTERNAL_PORT}
+
+      - traefik.http.routers.taiga-admin.tls=true
+      - traefik.http.routers.taiga-admin.service=taiga-admin
+      - traefik.http.routers.taiga-admin.entrypoints=web,websecure
+      - traefik.http.routers.taiga-admin.tls.certresolver=production
+      - traefik.http.routers.taiga-admin.rule=Host(`${TAIGA_SUBDOMAIN}.${DOMAIN_NAME}`) && PathPrefix(`/admin`)
+      - traefik.http.services.taiga-admin.loadbalancer.server.port=${TAIGA_BACK_INTERNAL_PORT}
+
+  taiga-db:
+    image: postgres:latest
+    container_name: taiga-db
+    environment:
+      - TZ=${GENERIC_TIMEZONE}
+      - POSTGRES_DB=${TAIGA_DB_NAME}
+      - POSTGRES_USER=${TAIGA_DB_USER}
+      - POSTGRES_PASSWORD=${TAIGA_DB_PASSWORD}
+    depends_on:
+      - traefik
+    networks:
+      - general
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${TAIGA_DB_USER} -d ${TAIGA_DB_NAME}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - ./taiga-postgres:/var/lib/postgresql/data
+
+  taiga-async:
+    image: taigaio/taiga-back:latest
+    entrypoint: ["/taiga-back/docker/async_entrypoint.sh"]
+    container_name: taiga-async
+    environment: 
+      - POSTGRES_HOST=${TAIGA_DB_HOST}
+      - POSTGRES_DB=${TAIGA_DB_NAME}
+      - POSTGRES_USER=${TAIGA_DB_USER}
+      - POSTGRES_PASSWORD=${TAIGA_DB_PASSWORD}
+      - TAIGA_SECRET_KEY=${TAIGA_SECRET_KEY}
+      - TAIGA_SITES_SCHEME=${HTTP_SCHEME}
+      - TAIGA_SITES_DOMAIN=${TAIGA_SUBDOMAIN}.${DOMAIN_NAME}
+      - TAIGA_SUBPATH=${TAIGA_SUBPATH}
+      - EMAIL_BACKEND=django.core.mail.backends.console.EmailBackend
+      - DEFAULT_FROM_EMAIL=${EMAIL_DEFAULT_FROM}
+      - EMAIL_USE_TLS=True
+      - EMAIL_USE_SSL=False
+      - EMAIL_HOST=smtp.host.${DOMAIN_NAME}
+      - EMAIL_PORT=587
+      - EMAIL_HOST_USER=${EMAIL_HOST_USER}
+      - EMAIL_HOST_PASSWORD=${EMAIL_HOST_PASSWORD}
+      - RABBITMQ_USER=${RABBITMQ_USER}
+      - RABBITMQ_PASS=${RABBITMQ_PASS}
+      - ENABLE_TELEMETRY=False
+    volumes: 
+      - ./taiga-back/static:/taiga-back/static
+      - ./taiga-back/media:/taiga-back/media
+    networks:
+      - general
+    depends_on:
+      traefik:
+        condition: service_started
+      taiga-db:
+        condition: service_healthy
+      taiga-events-rabbitmq:
+        condition: service_started
+      taiga-async-rabbitmq:
+        condition: service_started
+
+  taiga-async-rabbitmq:
+    image: rabbitmq:3.8-management-alpine
+    container_name: taiga-async-rabbitmq
+    environment:
+      - RABBITMQ_ERLANG_COOKIE=${RABBITMQ_ERLANG_COOKIE}
+      - RABBITMQ_DEFAULT_USER=${RABBITMQ_USER}
+      - RABBITMQ_DEFAULT_PASS=${RABBITMQ_PASS}
+      - RABBITMQ_DEFAULT_VHOST=${RABBITMQ_VHOST}
+    hostname: "taiga-async-rabbitmq"
+    volumes:
+      - ./taiga-async-rabbitmq:/var/lib/rabbitmq
+    networks:
+      - general
+
+  taiga-events:
+    image: taigaio/taiga-events:latest
+    container_name: taiga-events
+    environment:
+      - RABBITMQ_USER=${RABBITMQ_USER}
+      - RABBITMQ_PASS=${RABBITMQ_PASS}
+      - TAIGA_SECRET_KEY=${TAIGA_SECRET_KEY}
+    networks:
+      - general
+    depends_on:
+      - traefik
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.taiga-events.tls=true
+      - traefik.http.routers.taiga-events.service=taiga-events
+      - traefik.http.routers.taiga-events.entrypoints=web,websecure
+      - traefik.http.routers.taiga-events.tls.certresolver=production
+      - traefik.http.routers.taiga-events.rule=Host(`${TAIGA_SUBDOMAIN}.${DOMAIN_NAME}`) && PathPrefix(`/events`)
+      - traefik.http.services.taiga-events.loadbalancer.server.port=${TAIGA_EVENTS_INTERNAL_PORT}
+
+  taiga-events-rabbitmq:
+    image: rabbitmq:3.8-management-alpine
+    container_name: taiga-events-rabbitmq
+    environment:
+      - RABBITMQ_ERLANG_COOKIE=${RABBITMQ_ERLANG_COOKIE}
+      - RABBITMQ_DEFAULT_USER=${RABBITMQ_USER}
+      - RABBITMQ_DEFAULT_PASS=${RABBITMQ_PASS}
+      - RABBITMQ_DEFAULT_VHOST=${RABBITMQ_VHOST}
+    hostname: "taiga-events-rabbitmq"
+    volumes:
+      - ./taiga-events-rabbitmq:/var/lib/rabbitmq
+    networks:
+      - general
+
+  taiga-protected:
+    image: taigaio/taiga-protected:latest
+    container_name: taiga-protected
+    environment:
+      - MAX_AGE=360
+      - SECRET_KEY=${TAIGA_SECRET_KEY}
+    networks:
+      - general
+    depends_on:
+      - traefik
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.taiga-protected.tls=true
+      - traefik.http.routers.taiga-protected.service=taiga-protected
+      - traefik.http.routers.taiga-protected.entrypoints=web,websecure
+      - traefik.http.routers.taiga-protected.tls.certresolver=production
+      - traefik.http.routers.taiga-protected.rule=Host(`${TAIGA_SUBDOMAIN}.${DOMAIN_NAME}`) && PathPrefix(`/protected`)
+      - traefik.http.services.taiga-protected.loadbalancer.server.port=${TAIGA_PROTECTED_INTERNAL_PORT}
+
+  glitchtip:
+    image: glitchtip/glitchtip
+    container_name: glitchtip
+    environment: 
+      - DATABASE_URL=postgres://${GLITCHTIP_DB_USER}:${GLITCHTIP_DB_PASSWORD}@glitchtip_db:5432/${GLITCHTIP_DB_NAME}
+      - SECRET_KEY=${GLITCHTIP_SECRET_KEY}
+      - GLITCHTIP_DOMAIN=${HTTP_SCHEME}://${GLITCHTIP_SUBDOMAIN}.${DOMAIN_NAME}
+      - DEFAULT_FROM_EMAIL=${EMAIL}
+      - PORT=${GLITCHTIP_INTERNAL_PORT}
+    restart: unless-stopped
+    volumes: 
+      - ./glitchtip:/code/uploads
+    networks:
+      - general
+    depends_on:
+      traefik:
+        condition: service_started
+      glitchtip_redis:
+        condition: service_started
+      glitchtip_worker:
+        condition: service_started
+      glitchtip_db:
+        condition: service_healthy
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.glitchtip.rule=Host(`${GLITCHTIP_SUBDOMAIN}.${DOMAIN_NAME}`)
+      - traefik.http.routers.glitchtip.service=glitchtip
+      - traefik.http.routers.glitchtip.tls=true
+      - traefik.http.routers.glitchtip.entrypoints=web,websecure
+      - traefik.http.routers.glitchtip.tls.certresolver=production
+      - traefik.http.services.glitchtip.loadbalancer.server.port=${GLITCHTIP_INTERNAL_PORT}
+  glitchtip_db:
+    image: postgres:latest
+    container_name: glitchtip_db
+    restart: unless-stopped
+    environment:
+      - TZ=${GENERIC_TIMEZONE}
+      - POSTGRES_DB=${GLITCHTIP_DB_NAME}
+      - POSTGRES_USER=${GLITCHTIP_DB_USER}
+      - POSTGRES_PASSWORD=${GLITCHTIP_DB_PASSWORD}
+    volumes:
+      - ./glitchtip_postgres:/var/lib/postgresql/data
+    depends_on:
+      - traefik
+    networks:
+      - general
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${GLITCHTIP_DB_USER} -d ${GLITCHTIP_DB_NAME}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  glitchtip_redis:
+    image: redis
+    container_name: glitchtip_redis
+    restart: unless-stopped
+    networks:
+      - general
+    depends_on:
+      - traefik
+
+  glitchtip_worker:
+    image: glitchtip/glitchtip
+    container_name: glitchtip_worker
+    command: ./bin/run-celery-with-beat.sh
+    depends_on:
+      traefik:
+        condition: service_started
+      glitchtip_redis:
+        condition: service_started
+      glitchtip_db:
+        condition: service_healthy
+    environment: 
+      - CELERY_WORKER_AUTOSCALE=${GLITCHTIP_CELERY_WORKER_AUTOSCALE}
+      - CELERY_WORKER_MAX_TASKS_PER_CHILD=${GLITCHTIP_CELERY_WORKER_MAX_TASKS_PER_CHILD}
+    networks:
+      - general
+    restart: unless-stopped
+    volumes: 
+      - ./glitchtip:/code/uploads
+    labels:
+      - traefik.enable=true
+  glitchtip_migrate:
+    image: glitchtip/glitchtip
+    container_name: glitchtip_migrate
+    networks:
+      general:
+        ipv4_address: ${GLITCHTIP_MIGRATE_IP}
+    depends_on:
+      traefik:
+        condition: service_started
+      glitchtip_redis:
+        condition: service_started
+      glitchtip_db:
+        condition: service_healthy
+    command: "./manage.py migrate"
+    environment: 
+      - DATABASE_URL=postgres://${GLITCHTIP_DB_USER}:${GLITCHTIP_DB_PASSWORD}@glitchtip_db:5432/${GLITCHTIP_DB_NAME}
+      - SECRET_KEY=${GLITCHTIP_SECRET_KEY}
+      # - GLITCHTIP_DOMAIN=${HTTP_SCHEME}://${GLITCHTIP_SUBDOMAIN}.${DOMAIN_NAME}
+      # - DEFAULT_FROM_EMAIL=${EMAIL}
+
+
+networks:
+  general:
+    name: general
+    driver: bridge
+    ipam:
+      config:
+        - subnet: "${SUBNET}"
+          gateway: "${GATEWAY}"
+
+
