@@ -17,7 +17,7 @@ services:
     networks:
       - general
     command:
-      - --log.level=DEBUG
+      # - --log.level=DEBUG
       # - --api.insecure=true
       - --providers.docker
       - --providers.docker.exposedByDefault=true
