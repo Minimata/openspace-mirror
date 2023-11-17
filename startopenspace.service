@@ -1,0 +1,10 @@
+[Unit]
+Description=launches a script that setups openspace automatically on boot
+After=network.target
+Requires=network.target
+
+[Service]
+ExecStart=/home/minimata/openspace/startup_setup.sh
+
+[Install]
+WantedBy=multi-user.target
